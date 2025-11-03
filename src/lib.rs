@@ -9,6 +9,93 @@ pub struct ExponentialHistogram {
     max_buckets: u16,
 }
 
+impl std::fmt::Debug for ExponentialHistogram {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExponentialHistogram")
+            .field("scale", &self.scale)
+            .field("max_buckets", &self.max_buckets)
+            .field("count", &self.count())
+            .field("sum", &self.sum())
+            .field("min", &self.min())
+            .field("max", &self.max())
+            .field("has_negatives", &self.has_negatives())
+            .finish()
+    }
+}
+
+impl Clone for ExponentialHistogram {
+    fn clone(&self) -> Self {
+        Self {
+            positive: self.positive.clone(),
+            negative: self.negative.clone(),
+            scale: self.scale,
+            max_buckets: self.max_buckets,
+        }
+    }
+}
+
+impl PartialEq for ExponentialHistogram {
+    fn eq(&self, other: &Self) -> bool {
+        // Compare configuration
+        if self.scale != other.scale || self.max_buckets != other.max_buckets {
+            return false;
+        }
+
+        // Compare computed statistics
+        if self.count() != other.count() {
+            return false;
+        }
+
+        // Compare bucket data for positive histogram
+        let self_positive_buckets: Vec<_> = self.positive.iter()
+            .filter(|b| b.count() > 0)
+            .map(|b| (b.start(), b.end(), b.count()))
+            .collect();
+
+        let other_positive_buckets: Vec<_> = other.positive.iter()
+            .filter(|b| b.count() > 0)
+            .map(|b| (b.start(), b.end(), b.count()))
+            .collect();
+
+        if self_positive_buckets != other_positive_buckets {
+            return false;
+        }
+
+        // Compare bucket data for negative histogram
+        let self_negative_buckets: Vec<_> = self.negative.iter()
+            .filter(|b| b.count() > 0)
+            .map(|b| (b.start(), b.end(), b.count()))
+            .collect();
+
+        let other_negative_buckets: Vec<_> = other.negative.iter()
+            .filter(|b| b.count() > 0)
+            .map(|b| (b.start(), b.end(), b.count()))
+            .collect();
+
+        self_negative_buckets == other_negative_buckets
+    }
+}
+
+impl std::fmt::Display for ExponentialHistogram {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "ExponentialHistogram(scale={}, count={}, sum={:.2}, min={:.2}, max={:.2})",
+            self.scale,
+            self.count(),
+            self.sum(),
+            self.min(),
+            self.max()
+        )
+    }
+}
+
+impl Default for ExponentialHistogram {
+    fn default() -> Self {
+        Self::new(0)
+    }
+}
+
 impl ExponentialHistogram {
     pub fn new(desired_scale: u8) -> Self {
         Self::new_with_max_buckets(desired_scale, 160)
@@ -194,6 +281,27 @@ pub struct SharedExponentialHistogram {
     scale: u8,
     #[allow(dead_code)]
     max_buckets: u16,
+}
+
+impl std::fmt::Debug for SharedExponentialHistogram {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let snapshot = self.snapshot();
+        f.debug_struct("SharedExponentialHistogram")
+            .field("scale", &self.scale)
+            .field("max_buckets", &self.max_buckets)
+            .field("count", &snapshot.count())
+            .field("sum", &snapshot.sum())
+            .field("min", &snapshot.min())
+            .field("max", &snapshot.max())
+            .field("has_negatives", &snapshot.has_negatives())
+            .finish()
+    }
+}
+
+impl Default for SharedExponentialHistogram {
+    fn default() -> Self {
+        Self::new(0)
+    }
 }
 
 impl SharedExponentialHistogram {
@@ -446,5 +554,125 @@ mod tests {
 
         println!("Computed sum: {}, Expected: 60", computed_sum);
         println!("Note: Sum is approximate due to bucket quantization");
+    }
+
+    #[test]
+    fn test_debug_implementation() {
+        let mut hist = ExponentialHistogram::new(2);
+        hist.accumulate(5.0);
+        hist.accumulate(-3.0);
+        hist.accumulate(10.0);
+
+        let debug_output = format!("{:?}", hist);
+        assert!(debug_output.contains("ExponentialHistogram"));
+        assert!(debug_output.contains("scale: 2"));
+        assert!(debug_output.contains("count: 3"));
+        assert!(debug_output.contains("has_negatives: true"));
+
+        let shared = SharedExponentialHistogram::new(1);
+        shared.accumulate(1.0);
+        shared.accumulate(2.0);
+
+        let debug_output = format!("{:?}", shared);
+        assert!(debug_output.contains("SharedExponentialHistogram"));
+        assert!(debug_output.contains("scale: 1"));
+        assert!(debug_output.contains("count: 2"));
+    }
+
+    #[test]
+    fn test_clone_implementation() {
+        // Test ExponentialHistogram clone
+        let mut hist = ExponentialHistogram::new(2);
+        hist.accumulate(5.0);
+        hist.accumulate(-3.0);
+        hist.accumulate(10.0);
+
+        let cloned = hist.clone();
+
+        assert_eq!(hist.count(), cloned.count());
+        assert_eq!(hist.scale(), cloned.scale());
+        assert_eq!(hist.has_negatives(), cloned.has_negatives());
+        assert_eq!(hist.min(), cloned.min());
+        assert_eq!(hist.max(), cloned.max());
+
+        // SharedExponentialHistogram doesn't implement Clone - it's meant to be
+        // shared via Arc, not cloned. If you need independent copies, use snapshot().
+    }
+
+    #[test]
+    fn test_partial_eq_implementation() {
+        let mut hist1 = ExponentialHistogram::new(2);
+        hist1.accumulate(5.0);
+        hist1.accumulate(-3.0);
+        hist1.accumulate(10.0);
+
+        let mut hist2 = ExponentialHistogram::new(2);
+        hist2.accumulate(5.0);
+        hist2.accumulate(-3.0);
+        hist2.accumulate(10.0);
+
+        // Should be equal
+        assert_eq!(hist1, hist2);
+
+        // Add different value to hist2
+        hist2.accumulate(20.0);
+        assert_ne!(hist1, hist2);
+
+        // Different scale should not be equal
+        let mut hist3 = ExponentialHistogram::new(1);
+        hist3.accumulate(5.0);
+        hist3.accumulate(-3.0);
+        hist3.accumulate(10.0);
+        assert_ne!(hist1, hist3);
+
+        // Test cloned histogram equals original
+        let hist4 = hist1.clone();
+        assert_eq!(hist1, hist4);
+    }
+
+    #[test]
+    fn test_display_implementation() {
+        let mut hist = ExponentialHistogram::new(2);
+        hist.accumulate(5.0);
+        hist.accumulate(-3.0);
+        hist.accumulate(10.0);
+
+        let display_output = format!("{}", hist);
+        println!("Display output: {}", display_output);
+        assert!(display_output.contains("ExponentialHistogram"));
+        assert!(display_output.contains("scale=2"));
+        assert!(display_output.contains("count=3"));
+
+        // Test empty histogram
+        let empty_hist = ExponentialHistogram::new(0);
+        let empty_output = format!("{}", empty_hist);
+        println!("Empty display output: {}", empty_output);
+        assert!(empty_output.contains("count=0"));
+        assert!(empty_output.contains("sum=0.00"));
+    }
+
+    #[test]
+    fn test_default_implementation() {
+        // Test ExponentialHistogram default
+        let hist = ExponentialHistogram::default();
+        assert_eq!(hist.scale(), 0);
+        assert_eq!(hist.count(), 0);
+        assert!(hist.is_empty());
+
+        // Test SharedExponentialHistogram default
+        let shared = SharedExponentialHistogram::default();
+        let snapshot = shared.snapshot();
+        assert_eq!(snapshot.scale(), 0);
+        assert_eq!(snapshot.count(), 0);
+        assert!(snapshot.is_empty());
+
+        // Verify default histograms work normally
+        let mut hist2 = ExponentialHistogram::default();
+        hist2.accumulate(5.0);
+        assert_eq!(hist2.count(), 1);
+
+        let shared2 = SharedExponentialHistogram::default();
+        shared2.accumulate(10.0);
+        assert_eq!(shared2.snapshot().count(), 1);
     }
 }
